@@ -1,5 +1,6 @@
 package com.simplemobiletools.filemanager.pro.adapters
 
+// import java.util.zip.ZipOutputStream
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -44,13 +45,68 @@ import kotlinx.android.synthetic.main.item_file_dir_list.view.item_icon
 import kotlinx.android.synthetic.main.item_file_dir_list.view.item_name
 import kotlinx.android.synthetic.main.item_file_grid.view.*
 import kotlinx.android.synthetic.main.item_section.view.*
-import java.io.BufferedInputStream
-import java.io.Closeable
-import java.io.File
+import net.lingala.zip4j.io.outputstream.ZipOutputStream
+import net.lingala.zip4j.model.ZipParameters
+import net.lingala.zip4j.model.enums.AesKeyStrength
+import net.lingala.zip4j.model.enums.CompressionMethod
+import net.lingala.zip4j.model.enums.EncryptionMethod
+import net.lingala.zip4j.ZipFile
+import java.io.*
 import java.util.*
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
-import java.util.zip.ZipOutputStream
+
+
+class ZipOutputStreamExample {
+    @Throws(IOException::class)
+    fun zipOutputStreamExample(
+        outputZipFile: File, filesToAdd: List<File>, password: CharArray,
+        compressionMethod: CompressionMethod, encrypt: Boolean,
+        encryptionMethod: EncryptionMethod, aesKeyStrength: AesKeyStrength
+    ) {
+        val zipParameters: ZipParameters = buildZipParameters(compressionMethod, encrypt, encryptionMethod, aesKeyStrength)
+        val buff = ByteArray(4096)
+        var readLen: Int
+        initializeZipOutputStream(outputZipFile, encrypt, password).use { zos ->
+            for (fileToAdd in filesToAdd) {
+
+                // Entry size has to be set if you want to add entries of STORE compression method (no compression)
+                // This is not required for deflate compression
+                if (zipParameters.getCompressionMethod() === CompressionMethod.STORE) {
+                    zipParameters.setEntrySize(fileToAdd.length())
+                }
+                zipParameters.setFileNameInZip(fileToAdd.name)
+                zos.putNextEntry(zipParameters)
+                FileInputStream(fileToAdd).use { inputStream ->
+                    while (inputStream.read(buff).also { readLen = it } != -1) {
+                        zos.write(buff, 0, readLen)
+                    }
+                }
+                zos.closeEntry()
+            }
+        }
+    }
+
+    @Throws(IOException::class)
+    private fun initializeZipOutputStream(outputZipFile: File, encrypt: Boolean, password: CharArray): ZipOutputStream {
+        val fos = FileOutputStream(outputZipFile)
+        return if (encrypt) {
+            ZipOutputStream(fos, password)
+        } else ZipOutputStream(fos)
+    }
+
+    private fun buildZipParameters(
+        compressionMethod: CompressionMethod, encrypt: Boolean,
+        encryptionMethod: EncryptionMethod, aesKeyStrength: AesKeyStrength
+    ): ZipParameters {
+        val zipParameters = ZipParameters()
+        zipParameters.setCompressionMethod(compressionMethod)
+        zipParameters.setEncryptionMethod(encryptionMethod)
+        zipParameters.setAesKeyStrength(aesKeyStrength)
+        zipParameters.setEncryptFiles(encrypt)
+        return zipParameters
+    }
+}
 
 class ItemsAdapter(
     activity: SimpleActivity, var listItems: MutableList<ListItem>, val listener: ItemOperationsListener?, recyclerView: MyRecyclerView,
@@ -632,11 +688,30 @@ class ItemsAdapter(
     }
 
     @SuppressLint("NewApi")
-    private fun compressPaths(sourcePaths: List<String>, targetPath: String): Boolean {
-        val queue = LinkedList<String>()
-        val fos = activity.getFileOutputStreamSync(targetPath, "application/zip") ?: return false
+    private fun compressPathsP(outputZipFileName: String, sourcePaths: List<String>, password: CharArray,
+        encrypt: Boolean): Boolean {
 
-        val zout = ZipOutputStream(fos)
+        val outputZipFile = File(outputZipFileName)
+
+        val zipParameters = ZipParameters()
+        zipParameters.setCompressionMethod(CompressionMethod.DEFLATE)
+        zipParameters.setEncryptionMethod(EncryptionMethod.AES)
+        zipParameters.setAesKeyStrength(AesKeyStrength.KEY_STRENGTH_256)
+        zipParameters.setEncryptFiles(true)
+
+        val buff = ByteArray(4096)
+        var readLen: Int
+
+        val fos = FileOutputStream(outputZipFile)
+
+        val queue = LinkedList<String>()
+        //val fos = activity.getFileOutputStreamSync(targetPath, "application/zip") ?: return false
+
+        val zout = if (encrypt) {
+            ZipOutputStream(fos, password)
+        } else ZipOutputStream(fos)
+
+        //val zout = ZipOutputStream(fos)
         var res: Closeable = fos
 
         try {
@@ -648,7 +723,8 @@ class ItemsAdapter(
                 queue.push(mainFilePath)
                 if (activity.getIsPathDirectory(mainFilePath)) {
                     name = "${mainFilePath.getFilenameFromPath()}/"
-                    zout.putNextEntry(ZipEntry(name))
+                    zipParameters.setFileNameInZip(name)
+                    zout.putNextEntry(zipParameters)
                 }
 
                 while (!queue.isEmpty()) {
@@ -661,10 +737,12 @@ class ItemsAdapter(
                                     if (activity.getIsPathDirectory(file.path)) {
                                         queue.push(file.path)
                                         name = "${name.trimEnd('/')}/"
-                                        zout.putNextEntry(ZipEntry(name))
+                                        zipParameters.setFileNameInZip(name)
+                                        zout.putNextEntry(zipParameters)
                                     } else {
-                                        zout.putNextEntry(ZipEntry(name))
-                                        activity.getFileInputStreamSync(file.path)!!.copyTo(zout)
+                                        zipParameters.setFileNameInZip(name)
+                                        zout.putNextEntry(zipParameters)
+                                        //activity.getFileInputStreamSync(file.path)!!.copyTo(zout)
                                         zout.closeEntry()
                                     }
                                 }
@@ -676,19 +754,29 @@ class ItemsAdapter(
                                 if (activity.getIsPathDirectory(file.absolutePath)) {
                                     queue.push(file.absolutePath)
                                     name = "${name.trimEnd('/')}/"
-                                    zout.putNextEntry(ZipEntry(name))
+                                    zipParameters.setFileNameInZip(name)
+                                    zout.putNextEntry(zipParameters)
                                 } else {
-                                    zout.putNextEntry(ZipEntry(name))
-                                    activity.getFileInputStreamSync(file.path)!!.copyTo(zout)
-                                    zout.closeEntry()
+                                    zipParameters.setFileNameInZip(name)
+                                    zout.putNextEntry(zipParameters)
+                                    //activity.getFileInputStreamSync(file.path)!!.copyTo(zout)
                                 }
+
+                                FileInputStream(file).use { inputStream ->
+                                    while (inputStream.read(buff).also { readLen = it } != -1) {
+                                        zout.write(buff, 0, readLen)
+                                    }
+                                }
+                                zout.closeEntry()
                             }
                         }
 
                     } else {
                         name = if (base == currentPath) currentPath.getFilenameFromPath() else mainFilePath.relativizeWith(base)
-                        zout.putNextEntry(ZipEntry(name))
-                        activity.getFileInputStreamSync(mainFilePath)!!.copyTo(zout)
+                        zipParameters.setFileNameInZip(name)
+                        zout.putNextEntry(zipParameters)
+                        //activity.getFileInputStreamSync(mainFilePath)!!.copyTo(zout)
+
                         zout.closeEntry()
                     }
                 }
@@ -701,6 +789,97 @@ class ItemsAdapter(
         }
         return true
     }
+
+    private fun compressPaths(sourcePaths: List<String>, targetPath: String): Boolean {
+        val zipParameters = ZipParameters()
+        zipParameters.isEncryptFiles = true
+        zipParameters.encryptionMethod = EncryptionMethod.AES
+        zipParameters.aesKeyStrength = AesKeyStrength.KEY_STRENGTH_256
+
+        val zipFile = ZipFile(targetPath, "password".toCharArray())
+
+        val filesToAdd = sourcePaths.map { File(it) }
+        for (file in filesToAdd) {
+            if (file.isDirectory()) {
+                zipFile.addFolder(file, zipParameters)
+            } else if (file.isFile()) {
+                zipFile.addFile(file, zipParameters)
+            }
+        }
+
+        return true
+    }
+
+//    @SuppressLint("NewApi")
+//    private fun compressPaths(sourcePaths: List<String>, targetPath: String): Boolean {
+//        val queue = LinkedList<String>()
+//        val fos = activity.getFileOutputStreamSync(targetPath, "application/zip") ?: return false
+//
+//        val zout = ZipOutputStream(fos)
+//        var res: Closeable = fos
+//
+//        try {
+//            sourcePaths.forEach { currentPath ->
+//                var name: String
+//                var mainFilePath = currentPath
+//                val base = "${mainFilePath.getParentPath()}/"
+//                res = zout
+//                queue.push(mainFilePath)
+//                if (activity.getIsPathDirectory(mainFilePath)) {
+//                    name = "${mainFilePath.getFilenameFromPath()}/"
+//                    zout.putNextEntry(ZipEntry(name))
+//                }
+//
+//                while (!queue.isEmpty()) {
+//                    mainFilePath = queue.pop()
+//                    if (activity.getIsPathDirectory(mainFilePath)) {
+//                        if (activity.isRestrictedSAFOnlyRoot(mainFilePath)) {
+//                            activity.getAndroidSAFFileItems(mainFilePath, true) { files ->
+//                                for (file in files) {
+//                                    name = file.path.relativizeWith(base)
+//                                    if (activity.getIsPathDirectory(file.path)) {
+//                                        queue.push(file.path)
+//                                        name = "${name.trimEnd('/')}/"
+//                                        zout.putNextEntry(ZipEntry(name))
+//                                    } else {
+//                                        zout.putNextEntry(ZipEntry(name))
+//                                        activity.getFileInputStreamSync(file.path)!!.copyTo(zout)
+//                                        zout.closeEntry()
+//                                    }
+//                                }
+//                            }
+//                        } else {
+//                            val mainFile = File(mainFilePath)
+//                            for (file in mainFile.listFiles()) {
+//                                name = file.path.relativizeWith(base)
+//                                if (activity.getIsPathDirectory(file.absolutePath)) {
+//                                    queue.push(file.absolutePath)
+//                                    name = "${name.trimEnd('/')}/"
+//                                    zout.putNextEntry(ZipEntry(name))
+//                                } else {
+//                                    zout.putNextEntry(ZipEntry(name))
+//                                    activity.getFileInputStreamSync(file.path)!!.copyTo(zout)
+//                                    zout.closeEntry()
+//                                }
+//                            }
+//                        }
+//
+//                    } else {
+//                        name = if (base == currentPath) currentPath.getFilenameFromPath() else mainFilePath.relativizeWith(base)
+//                        zout.putNextEntry(ZipEntry(name))
+//                        activity.getFileInputStreamSync(mainFilePath)!!.copyTo(zout)
+//                        zout.closeEntry()
+//                    }
+//                }
+//            }
+//        } catch (exception: Exception) {
+//            activity.showErrorToast(exception)
+//            return false
+//        } finally {
+//            res.close()
+//        }
+//        return true
+//    }
 
     private fun askConfirmDelete() {
         activity.handleDeletePasswordProtection {

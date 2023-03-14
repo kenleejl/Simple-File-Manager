@@ -72,4 +72,5 @@ dependencies {
     implementation 'androidx.documentfile:documentfile:1.0.1'
     implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
     implementation 'me.grantland:autofittextview:0.2.1'
+    implementation 'net.lingala.zip4j:zip4j:2.8.0'
 }
